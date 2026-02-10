@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/peer"
+	"github.com/btcsuite/btcd/scion"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/go-socks/socks"
 )
@@ -48,7 +49,7 @@ func (c conn) RemoteAddr() net.Addr {
 	if !c.proxy {
 		return &addr{c.rnet, c.raddr}
 	}
-	host, strPort, _ := net.SplitHostPort(c.raddr)
+	host, strPort, _ := scion.SplitHostPort(c.raddr)
 	port, _ := strconv.Atoi(strPort)
 	return &socks.ProxiedAddr{
 		Net:  c.rnet,

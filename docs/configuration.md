@@ -41,6 +41,28 @@ listen=127.0.0.1:8333
 listen=[::1]:8333
 ```
 
+### SCION/PAN (experimental)
+
+btcd can also accept and initiate **P2P** connections over SCION via PAN
+(`github.com/netsec-ethz/scion-apps/pkg/pan`). SCION is auto-detected by the
+address format. If a peer or listen address is of the form `ISD-AS,[IP]:port`,
+btcd will use PAN over QUIC (quicutil.SingleStream) for that connection.
+
+Examples:
+
+|Flags|Comment|
+|----------|------------|
+|--listen=1-ff00:0:110,192.0.2.1:8333|listen for inbound peers over SCION/PAN|
+|--addpeer=1-ff00:0:110,[2001:db8::1]:8333|dial a peer over SCION/PAN|
+
+PAN requires a local SCION endhost stack. It uses these environment variables:
+
+- `SCION_DAEMON_ADDRESS` (default `127.0.0.1:30255`)
+- `SCION_DISPATCHER_SOCKET` (default `/run/shm/dispatcher/default.sock`)
+
+Note: The QUIC transport is encrypted but unauthenticated by default (matching
+btcd's TCP trust model).
+
 In addition, if you are starting btcd with TLS and want to make it
 available via a hostname, then you will need to generate the TLS
 certificates for that host. For example,

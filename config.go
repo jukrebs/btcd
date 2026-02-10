@@ -6,6 +6,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -21,6 +22,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/btcsuite/btcd/scion"
 
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcutil"
@@ -317,9 +320,9 @@ func removeDuplicateAddresses(addrs []string) []string {
 // normalizeAddress returns addr with the passed default port appended if
 // there is not already a port specified.
 func normalizeAddress(addr, defaultPort string) string {
-	_, _, err := net.SplitHostPort(addr)
+	_, _, err := scion.SplitHostPort(addr)
 	if err != nil {
-		return net.JoinHostPort(addr, defaultPort)
+		return scion.JoinHostPort(addr, defaultPort)
 	}
 	return addr
 }
@@ -984,7 +987,7 @@ func loadConfig() (*config, []string, error) {
 			"::1":       {},
 		}
 		for _, addr := range cfg.RPCListeners {
-			host, _, err := net.SplitHostPort(addr)
+			host, _, err := scion.SplitHostPort(addr)
 			if err != nil {
 				str := "%s: RPC listen interface '%s' is " +
 					"invalid: %v"
@@ -1050,7 +1053,7 @@ func loadConfig() (*config, []string, error) {
 	cfg.dial = net.DialTimeout
 	cfg.lookup = net.LookupIP
 	if cfg.Proxy != "" {
-		_, _, err := net.SplitHostPort(cfg.Proxy)
+		_, _, err := scion.SplitHostPort(cfg.Proxy)
 		if err != nil {
 			str := "%s: Proxy address '%s' is invalid: %v"
 			err := fmt.Errorf(str, funcName, cfg.Proxy, err)
@@ -1096,7 +1099,7 @@ func loadConfig() (*config, []string, error) {
 	// normal dial function as selected above.  This allows .onion address
 	// traffic to be routed through a different proxy than normal traffic.
 	if cfg.OnionProxy != "" {
-		_, _, err := net.SplitHostPort(cfg.OnionProxy)
+		_, _, err := scion.SplitHostPort(cfg.OnionProxy)
 		if err != nil {
 			str := "%s: Onion proxy address '%s' is invalid: %v"
 			err := fmt.Errorf(str, funcName, cfg.OnionProxy, err)
@@ -1255,6 +1258,9 @@ func btcdDial(addr net.Addr) (net.Conn, error) {
 	if strings.Contains(addr.String(), ".onion:") {
 		return cfg.oniondial(addr.Network(), addr.String(),
 			defaultConnectTimeout)
+	}
+	if scion.IsAddress(addr.String()) {
+		return scion.Dial(context.Background(), addr.String(), defaultConnectTimeout)
 	}
 	return cfg.dial(addr.Network(), addr.String(), defaultConnectTimeout)
 }
