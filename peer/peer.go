@@ -21,6 +21,7 @@ import (
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/scion"
 	"github.com/btcsuite/btcd/v2transport"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/go-socks/socks"
@@ -325,20 +326,39 @@ func newNetAddress(addr net.Addr, services wire.ServiceFlag) (*wire.NetAddress, 
 		return na, nil
 	}
 
-	// For the most part, addr should be one of the two above cases, but
-	// to be safe, fall back to trying to parse the information from the
-	// address string as a last resort.
-	host, portStr, err := net.SplitHostPort(addr.String())
+	// Fall back to parsing the information from the address string.
+	//
+	// This also handles SCION/PAN connections by extracting the underlying
+	// IP address and port.
+	ip, port, err := parseIPPort(addr.String())
 	if err != nil {
 		return nil, err
 	}
-	ip := net.ParseIP(host)
-	port, err := strconv.ParseUint(portStr, 10, 16)
-	if err != nil {
-		return nil, err
-	}
-	na := wire.NewNetAddressIPPort(ip, uint16(port), services)
+	na := wire.NewNetAddressIPPort(ip, port, services)
 	return na, nil
+}
+
+func parseIPPort(addr string) (net.IP, uint16, error) {
+	// Standard host:port.
+	host, portStr, err := net.SplitHostPort(addr)
+	if err == nil {
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return nil, 0, fmt.Errorf("invalid IP: %q", host)
+		}
+		port, err := strconv.ParseUint(portStr, 10, 16)
+		if err != nil {
+			return nil, 0, err
+		}
+		return ip, uint16(port), nil
+	}
+
+	// SCION/PAN host string.
+	ip, port, err := scion.ExtractIPPort(addr)
+	if err != nil {
+		return nil, 0, err
+	}
+	return ip, port, nil
 }
 
 // outMsg is used to house a message to be sent along with a channel to signal
@@ -1202,7 +1222,7 @@ func (p *Peer) isAllowedReadError(err error) bool {
 
 	// Don't allow the error if it's not coming from localhost or the
 	// hostname can't be determined for some reason.
-	host, _, err := net.SplitHostPort(p.addr)
+	host, _, err := scion.SplitHostPort(p.addr)
 	if err != nil {
 		return false
 	}
@@ -2143,7 +2163,7 @@ func (p *Peer) localVersionMsg() (*wire.MsgVersion, error) {
 	// we return an unroutable address as their address. This is to prevent
 	// leaking the tor proxy address.
 	if p.cfg.Proxy != "" {
-		proxyaddress, _, err := net.SplitHostPort(p.cfg.Proxy)
+		proxyaddress, _, err := scion.SplitHostPort(p.cfg.Proxy)
 		// invalid proxy means poorly configured, be on the safe side.
 		if err != nil || p.na.Addr.String() == proxyaddress {
 			theirNA = wire.NewNetAddressIPPort(net.IP([]byte{0, 0, 0, 0}), 0,
@@ -2554,7 +2574,19 @@ func NewOutboundPeer(cfg *Config, addr string) (*Peer, error) {
 	p := newPeerBase(cfg, false)
 	p.addr = addr
 
-	host, portStr, err := net.SplitHostPort(addr)
+	// If this is a SCION address, keep p.na as the underlying IP:port so the
+	// rest of btcd (addrmgr grouping, legacy version fields, etc.) keeps working
+	// without SCION-specific wire changes.
+	if scion.IsAddress(addr) {
+		ip, port, err := scion.ExtractIPPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		p.na = wire.NetAddressV2FromBytes(time.Now(), 0, ip, port)
+		return p, nil
+	}
+
+	host, portStr, err := scion.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
 	}

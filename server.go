@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/binary"
@@ -36,6 +37,7 @@ import (
 	"github.com/btcsuite/btcd/mining/cpuminer"
 	"github.com/btcsuite/btcd/netsync"
 	"github.com/btcsuite/btcd/peer"
+	"github.com/btcsuite/btcd/scion"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/decred/dcrd/lru"
@@ -1781,7 +1783,7 @@ func (s *server) handleAddPeerMsg(state *peerState, sp *serverPeer) bool {
 	}
 
 	// Disconnect banned peers.
-	host, _, err := net.SplitHostPort(sp.Addr())
+	host, _, err := scion.SplitHostPort(sp.Addr())
 	if err != nil {
 		srvrLog.Debugf("can't split hostport %v", err)
 		sp.Disconnect()
@@ -1914,7 +1916,7 @@ func (s *server) handleDonePeerMsg(state *peerState, sp *serverPeer) {
 // handleBanPeerMsg deals with banning peers.  It is invoked from the
 // peerHandler goroutine.
 func (s *server) handleBanPeerMsg(state *peerState, sp *serverPeer) {
-	host, _, err := net.SplitHostPort(sp.Addr())
+	host, _, err := scion.SplitHostPort(sp.Addr())
 	if err != nil {
 		srvrLog.Debugf("can't split ban peer %s %v", sp.Addr(), err)
 		return
@@ -2661,7 +2663,14 @@ func (s *server) ScheduleShutdown(duration time.Duration) {
 func parseListeners(addrs []string) ([]net.Addr, error) {
 	netAddrs := make([]net.Addr, 0, len(addrs)*2)
 	for _, addr := range addrs {
-		host, _, err := net.SplitHostPort(addr)
+		// SCION listeners are handled by the SCION adapter; don't apply TCP
+		// address normalization or IP family splitting.
+		if scion.IsAddress(addr) {
+			netAddrs = append(netAddrs, simpleAddr{net: scion.Network, addr: addr})
+			continue
+		}
+
+		host, _, err := scion.SplitHostPort(addr)
 		if err != nil {
 			// Shouldn't happen due to already being normalized.
 			return nil, err
@@ -3170,7 +3179,13 @@ func initListeners(amgr *addrmgr.AddrManager, listenAddrs []string, services wir
 
 	listeners := make([]net.Listener, 0, len(netAddrs))
 	for _, addr := range netAddrs {
-		listener, err := net.Listen(addr.Network(), addr.String())
+		var listener net.Listener
+		var err error
+		if addr.Network() == scion.Network {
+			listener, err = scion.Listen(context.Background(), addr.String())
+		} else {
+			listener, err = net.Listen(addr.Network(), addr.String())
+		}
 		if err != nil {
 			srvrLog.Warnf("Can't listen on %s: %v", addr, err)
 			continue
@@ -3241,7 +3256,11 @@ func initListeners(amgr *addrmgr.AddrManager, listenAddrs []string, services wir
 // to IP addresses.  It also handles tor addresses properly by returning a
 // net.Addr that encapsulates the address.
 func addrStringToNetAddr(addr string) (net.Addr, error) {
-	host, strPort, err := net.SplitHostPort(addr)
+	if scion.IsAddress(addr) {
+		return simpleAddr{net: scion.Network, addr: addr}, nil
+	}
+
+	host, strPort, err := scion.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
 	}
@@ -3287,7 +3306,17 @@ func addrStringToNetAddr(addr string) (net.Addr, error) {
 // addLocalAddress adds an address that this node is listening on to the
 // address manager so that it may be relayed to peers.
 func addLocalAddress(addrMgr *addrmgr.AddrManager, addr string, services wire.ServiceFlag) error {
-	host, portStr, err := net.SplitHostPort(addr)
+	if scion.IsAddress(addr) {
+		ip, port, err := scion.ExtractIPPort(addr)
+		if err != nil {
+			return err
+		}
+		netAddr := wire.NetAddressV2FromBytes(time.Now(), services, ip, port)
+		addrMgr.AddLocalAddress(netAddr, addrmgr.BoundPrio)
+		return nil
+	}
+
+	host, portStr, err := scion.SplitHostPort(addr)
 	if err != nil {
 		return err
 	}
@@ -3361,12 +3390,18 @@ func isWhitelisted(addr net.Addr) bool {
 		return false
 	}
 
+	var ip net.IP
 	host, _, err := net.SplitHostPort(addr.String())
-	if err != nil {
-		srvrLog.Warnf("Unable to SplitHostPort on '%s': %v", addr, err)
-		return false
+	if err == nil {
+		ip = net.ParseIP(host)
+	} else if scion.IsAddress(addr.String()) {
+		ip, _, err = scion.ExtractIPPort(addr.String())
+		if err != nil {
+			srvrLog.Warnf("Unable to parse SCION address '%s': %v", addr, err)
+			return false
+		}
 	}
-	ip := net.ParseIP(host)
+
 	if ip == nil {
 		srvrLog.Warnf("Unable to parse IP '%s'", addr)
 		return false
